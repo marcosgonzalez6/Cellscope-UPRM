@@ -1,0 +1,20 @@
+{
+  "dev": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-cellscope-dev-35741-authRole",
+      "UnauthRoleArn": "arn:aws:iam::582048793133:role/amplify-cellscope-dev-35741-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::582048793133:role/amplify-cellscope-dev-35741-authRole",
+      "Region": "us-east-2",
+      "DeploymentBucketName": "amplify-cellscope-dev-35741-deployment",
+      "UnauthRoleName": "amplify-cellscope-dev-35741-unauthRole",
+      "StackName": "amplify-cellscope-dev-35741",
+      "StackId": "arn:aws:cloudformation:us-east-2:582048793133:stack/amplify-cellscope-dev-35741/94b81010-a8c0-11eb-b306-0286964bba4c",
+      "AmplifyAppId": "d2d372o3srs633"
+    },
+    "categories": {
+      "auth": {
+        "cellscopeb3c391f1": {}
+      }
+    }
+  }
+}

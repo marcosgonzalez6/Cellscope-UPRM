@@ -1,0 +1,6 @@
+framework module Pods_CellscopeTests {
+  umbrella header "Pods-CellscopeTests-umbrella.h"
+
+  export *
+  module * { export * }
+}
