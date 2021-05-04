@@ -32,6 +32,9 @@ struct CameraView: View {
     @State var shouldShowBrightfieldImage = false
     @State var brightfieldImage: UIImage?
     
+    @State var shouldShowDifferentialPhaseContrastImage = false
+    @State var differentialPhaseContrastImage: UIImage?
+    
     var body: some View {
         VStack {
             if let image = self.image {
@@ -59,13 +62,15 @@ struct CameraView: View {
                 .padding()
                 .background(Color.blue)
                 .foregroundColor(.white)
-//                Button(action: {}, label: {
-//                       Text("Darkfield")
-//                })
-//                .padding()
-//                .background(Color.blue)
-//                .foregroundColor(.white)
-//                .cornerRadius(8)
+                .cornerRadius(8)
+                Button(action: differentialPhaseContrastButton, label: {
+                       Text("DPC")
+                })
+                .padding()
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(8)
+                .frame(minWidth: 10.0)
             }
 //            HStack {
 //                Button(action: {}, label: {
@@ -88,7 +93,7 @@ struct CameraView: View {
 //            ImagePicker(image: $image)
 //        })
         .sheet(isPresented: $shouldShowBrightfieldImage, content: {
-            Image(uiImage: image!)
+            Image(uiImage: brightfieldImage!)
         })
     }
     
@@ -139,18 +144,19 @@ struct CameraView: View {
     
     @State var imageData1 = Data()
     @State var imageData2 = Data()
-    @State var cancellable1: AnyCancellable?
-    @State var cancellable2: AnyCancellable?
+    @State var cancellableBF1: AnyCancellable?
+    @State var cancellableBF2: AnyCancellable?
     
     func brightfieldButton() {
         brightfieldDownload()
         shouldShowBrightfieldImage.toggle()
     }
     
+    // download two images from unprocessed/samples/ and run bf processing algorithm
     func brightfieldDownload() {
         imageCounter -= 1
         let storageOperation1 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
-        cancellable1 = storageOperation1.resultPublisher.sink (
+        cancellableBF1 = storageOperation1.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
                     print(error)
@@ -163,7 +169,7 @@ struct CameraView: View {
         
         imageCounter -= 1
         let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
-        cancellable2 = storageOperation2.resultPublisher.sink (
+        cancellableBF2 = storageOperation2.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
                     print(error)
@@ -172,7 +178,7 @@ struct CameraView: View {
             receiveValue: {data in
                 self.imageData2 = data
                 group.enter()
-                brightfieldProcessing(data1: self.imageData1, data2: self.imageData2)
+                brightfieldProcessing(leftData: self.imageData1, rightData: self.imageData2)
                 group.leave()
                 print("Image data 2 - \(data)")
             })
@@ -180,7 +186,77 @@ struct CameraView: View {
         shouldShowBrightfieldImage.toggle()
     }
     
-    func brightfieldProcessing(data1: Data, data2: Data) {
+    func brightfieldProcessing(leftData: Data, rightData: Data) {
+        guard let leftImage = SwiftImage.Image<RGBA<UInt8>>(data: leftData)?.resizedTo(width: 20, height: 20)
+            else {return}
+        guard let rightImage = SwiftImage.Image<RGBA<UInt8>>(data: rightData)?.resizedTo(width: 20, height: 20)
+            else {return}
+        
+        var pixels: [RGBA<UInt8>] = []
+        for x in 0...leftImage.height-1 {
+            for y in 0...leftImage.width-1 {
+                if y < leftImage.width/2 {
+                    pixels.append(leftImage[x,y])
+                }
+                else {
+                    pixels.append(rightImage[x,y])
+                }
+            }
+        }
+        
+        let imageSaver = ImageSaver()
+        self.brightfieldImage = SwiftImage.Image<RGBA<UInt8>>(width: 20, height: 20, pixels: pixels).uiImage
+        imageSaver.writeToPhotoAlbum(image: self.brightfieldImage!)
+        DispatchQueue.main.async {
+            upload(image: self.brightfieldImage!, subfolder: "brightfield")
+        }
+        
+        print("-----Brightfield processing DONE-----")
+    }
+    
+    @State var cancellableDPC1: AnyCancellable?
+    @State var cancellableDPC2: AnyCancellable?
+    
+    func differentialPhaseContrastButton() {
+        differentialPhaseContrastDownload()
+        shouldShowDifferentialPhaseContrastImage.toggle()
+    }
+    
+    func differentialPhaseContrastDownload() {
+        imageCounter -= 1
+        let storageOperation1 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
+        cancellableDPC1 = storageOperation1.resultPublisher.sink (
+            receiveCompletion: {completion in
+                if case .failure(let error) = completion{
+                    print(error)
+                }
+            },
+            receiveValue: {data in
+                self.imageData1 = data
+                print("Image data 1 - \(data)")
+            })
+        
+        imageCounter -= 1
+        let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
+        cancellableDPC2 = storageOperation2.resultPublisher.sink (
+            receiveCompletion: {completion in
+                if case .failure(let error) = completion{
+                    print(error)
+                }
+            },
+            receiveValue: {data in
+                self.imageData2 = data
+                DispatchQueue.main.async {
+                    differentialPhaseContrastProcessing(data1: self.imageData1, data2: self.imageData2)
+                }
+                print("Image data 2 - \(data)")
+            })
+        
+        shouldShowDifferentialPhaseContrastImage.toggle()
+        
+    }
+    
+    func differentialPhaseContrastProcessing(data1: Data, data2: Data) {
         guard let image1 = SwiftImage.Image<RGBA<UInt8>>(data: data1)?.resizedTo(width: 20, height: 20)
             else {return}
         guard let image2 = SwiftImage.Image<RGBA<UInt8>>(data: data2)?.resizedTo(width: 20, height: 20)
@@ -189,7 +265,6 @@ struct CameraView: View {
         var pixels: [RGBA<UInt8>] = []
         for x in 0...image1.height-1 {
             for y in 0...image1.width-1 {
-                
                 let pixelsSum = [image1[x,y].red.addingReportingOverflow(image2[x,y].red).partialValue,
                                  image1[x,y].green.addingReportingOverflow(image2[x,y].green).partialValue,
                                  image1[x,y].blue.addingReportingOverflow(image2[x,y].blue).partialValue,
@@ -206,10 +281,10 @@ struct CameraView: View {
         self.image = SwiftImage.Image<RGBA<UInt8>>(width: 20, height: 20, pixels: pixels).uiImage
         imageSaver.writeToPhotoAlbum(image: self.image!)
         DispatchQueue.main.async {
-            upload(image: self.image!, subfolder: "brightfield")
+            upload(image: self.image!, subfolder: "dpc")
         }
         
-        print("-----Brightfield processing DONE-----")
+        print("-----Differential Phase Contrast processing DONE-----")
     }
 }
 
