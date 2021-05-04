@@ -35,6 +35,9 @@ struct CameraView: View {
     @State var shouldShowDifferentialPhaseContrastImage = false
     @State var differentialPhaseContrastImage: UIImage?
     
+    @State var shouldShowThreshholdingImage = false
+    @State var threshholdingImage: UIImage?
+    
     var body: some View {
         VStack {
             if let image = self.image {
@@ -72,13 +75,14 @@ struct CameraView: View {
                 .cornerRadius(8)
                 .frame(minWidth: 10.0)
             }
-//            HStack {
-//                Button(action: {}, label: {
-//                    Text("Quantitative Phase Imaging")
-//                })
-//                .padding()
-//                .background(Color.blue)
-//                .foregroundColor(.white)
+            HStack {
+                Button(action: threshholdingButton, label: {
+                    Text("Threshholding")
+                })
+                .padding()
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(8)
 //                Button(action: {}, label: {
 //                       Text("Custom")
 //                })
@@ -86,15 +90,15 @@ struct CameraView: View {
 //                .background(Color.blue)
 //                .foregroundColor(.white)
 //                .cornerRadius(8)
-//            }
+            }
             Spacer()
         }
-//        .sheet(isPresented: $shouldShowImagePicker, content: {
-//            ImagePicker(image: $image)
-//        })
-        .sheet(isPresented: $shouldShowBrightfieldImage, content: {
-            Image(uiImage: brightfieldImage!)
+        .sheet(isPresented: $shouldShowImagePicker, content: {
+            ImagePicker(image: $image)
         })
+//        .sheet(isPresented: $shouldShowBrightfieldImage, content: {
+//            Image(uiImage: brightfieldImage!)
+//        })
     }
     
     func takePhotoButton() {
@@ -106,9 +110,18 @@ struct CameraView: View {
         }
     }
     
+    func threshholdingButton() {
+        if let image = self.image {
+            upload(image: image, subfolder: "threshholding")
+        }
+        else {
+            shouldShowImagePicker.toggle()
+        }
+    }
+    
     // upload an image to AWS S3 bucket
     func upload(image: UIImage, subfolder: String){
-        guard let imageData = image.jpegData(compressionQuality: 0.8) else {return}
+        guard let imageData = image.jpegData(compressionQuality: 0.5) else {return}
         let key = subfolder + "/sample" + String(imageCounter) + ".jpg"
         
         _ = Amplify.Storage.uploadData(key: key, data: imageData) { result in
@@ -286,6 +299,37 @@ struct CameraView: View {
         
         print("-----Differential Phase Contrast processing DONE-----")
     }
+    
+//    @State var cancellableTH: AnyCancellable?
+//
+//    func threshholdingButton() {
+//        upload(image: self.image, subfolder: "threshholding")
+//    }
+//
+//    func threshholdingDownload() {
+//        imageCounter -= 1
+//        let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
+//        cancellableTH = storageOperation2.resultPublisher.sink (
+//            receiveCompletion: {completion in
+//                if case .failure(let error) = completion{
+//                    print(error)
+//                }
+//            },
+//            receiveValue: {data in
+//                self.imageData2 = data
+//                DispatchQueue.main.async {
+//                    threshholdingProcessing(data: self.imageData1)
+//                }
+//                print("Image data 2 - \(data)")
+//            })
+//
+//        shouldShowThreshholdingImage.toggle()
+//    }
+//
+//    func threshholdingProcessing() {
+//
+//    }
+    
 }
 
 struct CameraView_Previews: PreviewProvider {
