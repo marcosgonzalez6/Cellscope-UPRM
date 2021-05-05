@@ -4,6 +4,8 @@
 //
 //  Created by marcos joel gonzález on 4/29/21.
 //
+//  adapted from tutorial by Kilo Loco https://www.youtube.com/watch?v=i9QPG-4QiwM
+//
 
 import SwiftUI
 import Amplify
@@ -23,8 +25,8 @@ class ImageSaver: NSObject {
 
 struct CameraView: View {
     
-    @State var imageCounter = 4
-    private let group = DispatchGroup()
+    @State var imageCounter = 1
+    private let imageSaver = ImageSaver()
     
     @State var shouldShowImagePicker = false
     @State var image: UIImage?
@@ -96,23 +98,23 @@ struct CameraView: View {
         .sheet(isPresented: $shouldShowImagePicker, content: {
             ImagePicker(image: $image)
         })
-//        .sheet(isPresented: $shouldShowBrightfieldImage, content: {
-//            Image(uiImage: brightfieldImage!)
-//        })
+        .sheet(isPresented: $shouldShowBrightfieldImage, content: {
+            ImagePicker(image: $brightfieldImage)
+        })
+        .sheet(isPresented: $shouldShowDifferentialPhaseContrastImage, content: {
+            ImagePicker(image: $differentialPhaseContrastImage)
+        })
+        .sheet(isPresented: $shouldShowThreshholdingImage, content: {
+            ImagePicker(image: $threshholdingImage)
+        })
+        .onAppear {
+            observePosts()
+        }
     }
     
     func takePhotoButton() {
         if let image = self.image {
             upload(image: image, subfolder: "unprocessed")
-        }
-        else {
-            shouldShowImagePicker.toggle()
-        }
-    }
-    
-    func threshholdingButton() {
-        if let image = self.image {
-            upload(image: image, subfolder: "threshholding")
         }
         else {
             shouldShowImagePicker.toggle()
@@ -155,14 +157,69 @@ struct CameraView: View {
         }
     }
     
+    @State var cancellableObserve: AnyCancellable?
+    func observePosts() {
+        cancellableObserve = Amplify.DataStore.publisher(for: Post.self).sink(
+            receiveCompletion: { print($0) },
+            receiveValue: { event in
+                do {
+                    let post = try event.decodeModel(as: Post.self)
+                    downloadImages(for: [post])
+                    
+                } catch {
+                    print(error)
+                }
+            }
+        )
+    }
+    
+    func downloadImages(for posts: [Post]) {
+        for post in posts {
+            
+            _ = Amplify.Storage.downloadData(key: post.imageKey) { result in
+                switch result {
+                case .success(let imageData):
+                    let image = UIImage(data: imageData)
+                    print("IMAGE KEY: \(post.imageKey)")
+                    
+                    DispatchQueue.main.async {
+                        self.image = image
+                        
+//                        if post.imageKey.starts(with: "brightfield") {
+//                            self.brightfieldImage = image
+//                        }
+//                        else if post.imageKey.starts(with: "dpc") {
+//                            self.differentialPhaseContrastImage = image
+//                        }
+//                        else if post.imageKey.starts(with: "processed/threshholding") {
+//                            self.threshholdingImage = image
+//                            self.imageSaver.writeToPhotoAlbum(image: image!)
+//                        }
+                        self.imageSaver.writeToPhotoAlbum(image: image!)
+                    }
+                    
+                case .failure(let error):
+                    print("Failed to download image data - \(error)")
+                }
+            }
+            
+        }
+    }
+    
     @State var imageData1 = Data()
     @State var imageData2 = Data()
     @State var cancellableBF1: AnyCancellable?
     @State var cancellableBF2: AnyCancellable?
     
     func brightfieldButton() {
-        brightfieldDownload()
-        shouldShowBrightfieldImage.toggle()
+//        brightfieldDownload()
+//        shouldShowBrightfieldImage.toggle()
+        if let image = self.brightfieldImage {
+            upload(image: image, subfolder: "brightfield")
+        }
+        else {
+            shouldShowBrightfieldImage.toggle()
+        }
     }
     
     // download two images from unprocessed/samples/ and run bf processing algorithm
@@ -190,9 +247,9 @@ struct CameraView: View {
             },
             receiveValue: {data in
                 self.imageData2 = data
-                group.enter()
-                brightfieldProcessing(leftData: self.imageData1, rightData: self.imageData2)
-                group.leave()
+                DispatchQueue.main.async {
+                    brightfieldProcessing(leftData: self.imageData1, rightData: self.imageData2)
+                }
                 print("Image data 2 - \(data)")
             })
         
@@ -205,21 +262,34 @@ struct CameraView: View {
         guard let rightImage = SwiftImage.Image<RGBA<UInt8>>(data: rightData)?.resizedTo(width: 20, height: 20)
             else {return}
         
+//        var pixels: [RGBA<UInt8>] = []
+//        for x in 0...leftImage.height-1 {
+//            for y in 0...leftImage.width-1 {
+//                if y < leftImage.width/2 {
+//                    pixels.append(leftImage[x,y])
+//                }
+//                else {
+//                    pixels.append(rightImage[x,y])
+//                }
+//            }
+//        }
         var pixels: [RGBA<UInt8>] = []
         for x in 0...leftImage.height-1 {
-            for y in 0...leftImage.width-1 {
-                if y < leftImage.width/2 {
-                    pixels.append(leftImage[x,y])
-                }
-                else {
-                    pixels.append(rightImage[x,y])
-                }
+            for y in 0...rightImage.width-1 {
+                let pixelsSum = [leftImage[x,y].red.addingReportingOverflow(rightImage[x,y].red).partialValue,
+                                 leftImage[x,y].green.addingReportingOverflow(rightImage[x,y].green).partialValue,
+                                 leftImage[x,y].blue.addingReportingOverflow(rightImage[x,y].blue).partialValue,
+                                 leftImage[x,y].alpha.addingReportingOverflow(rightImage[x,y].alpha).partialValue]
+                let tempPixel = RGBA(red: pixelsSum[0],
+                                     green: pixelsSum[1],
+                                     blue: pixelsSum[2],
+                                     alpha: pixelsSum[3])
+                pixels.append(tempPixel)
             }
         }
         
-        let imageSaver = ImageSaver()
         self.brightfieldImage = SwiftImage.Image<RGBA<UInt8>>(width: 20, height: 20, pixels: pixels).uiImage
-        imageSaver.writeToPhotoAlbum(image: self.brightfieldImage!)
+        self.imageSaver.writeToPhotoAlbum(image: self.brightfieldImage!)
         DispatchQueue.main.async {
             upload(image: self.brightfieldImage!, subfolder: "brightfield")
         }
@@ -231,8 +301,14 @@ struct CameraView: View {
     @State var cancellableDPC2: AnyCancellable?
     
     func differentialPhaseContrastButton() {
-        differentialPhaseContrastDownload()
-        shouldShowDifferentialPhaseContrastImage.toggle()
+//        differentialPhaseContrastDownload()
+//        shouldShowDifferentialPhaseContrastImage.toggle()
+        if let image = self.differentialPhaseContrastImage {
+            upload(image: image, subfolder: "dpc")
+        }
+        else {
+            shouldShowDifferentialPhaseContrastImage.toggle()
+        }
     }
     
     func differentialPhaseContrastDownload() {
@@ -290,9 +366,12 @@ struct CameraView: View {
             }
         }
         
-        let imageSaver = ImageSaver()
         self.image = SwiftImage.Image<RGBA<UInt8>>(width: 20, height: 20, pixels: pixels).uiImage
-        imageSaver.writeToPhotoAlbum(image: self.image!)
+        
+        // save processed image to iPhone photo library
+        self.imageSaver.writeToPhotoAlbum(image: self.image!)
+        
+        // upload image to S3 bucket in folder "dpc"
         DispatchQueue.main.async {
             upload(image: self.image!, subfolder: "dpc")
         }
@@ -300,32 +379,37 @@ struct CameraView: View {
         print("-----Differential Phase Contrast processing DONE-----")
     }
     
-//    @State var cancellableTH: AnyCancellable?
-//
-//    func threshholdingButton() {
-//        upload(image: self.image, subfolder: "threshholding")
-//    }
-//
-//    func threshholdingDownload() {
+    @State var cancellableTH: AnyCancellable?
+
+    func threshholdingButton() {
+        if let image = self.threshholdingImage {
+            upload(image: image, subfolder: "unprocessed/threshholding")
+        }
+        else {
+            shouldShowThreshholdingImage.toggle()
+        }
+    }
+
+    func threshholdingDownload() {
 //        imageCounter -= 1
-//        let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
-//        cancellableTH = storageOperation2.resultPublisher.sink (
-//            receiveCompletion: {completion in
-//                if case .failure(let error) = completion{
-//                    print(error)
-//                }
-//            },
-//            receiveValue: {data in
-//                self.imageData2 = data
+        let storageOperation2 = Amplify.Storage.downloadData(key: "threshholding/sample\(imageCounter).jpg")
+        cancellableTH = storageOperation2.resultPublisher.sink (
+            receiveCompletion: {completion in
+                if case .failure(let error) = completion{
+                    print(error)
+                }
+            },
+            receiveValue: {data in
+                self.threshholdingImage = SwiftImage.Image<RGBA<UInt8>>(data: data)?.uiImage
 //                DispatchQueue.main.async {
 //                    threshholdingProcessing(data: self.imageData1)
 //                }
-//                print("Image data 2 - \(data)")
-//            })
-//
+                print("Image data 2 - \(data)")
+            })
+
 //        shouldShowThreshholdingImage.toggle()
-//    }
-//
+    }
+
 //    func threshholdingProcessing() {
 //
 //    }

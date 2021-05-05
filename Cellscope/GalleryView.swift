@@ -57,7 +57,6 @@ struct GalleryView: View {
                     print("Failed to download image data - \(error)")
                 }
             }
-            
         }
     }
     
