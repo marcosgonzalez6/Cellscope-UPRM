@@ -27,6 +27,7 @@ struct CameraView: View {
     
     @State var imageCounter = 1
     private let imageSaver = ImageSaver()
+    @State var imagesInS3Bucket = [String]()  // list of image keys in S3 bucket
     
     @State var shouldShowImagePicker = false
     @State var image: UIImage?
@@ -108,8 +109,24 @@ struct CameraView: View {
             ImagePicker(image: $threshholdingImage)
         })
         .onAppear {
-            observePosts()
+            listen()
         }
+    }
+    
+    @State var listenToken: AnyCancellable?
+    func listen() {
+        listenToken = Amplify.Storage.list().resultPublisher.sink {
+            if case let .failure(storageError) = $0 {
+                print("Failed: \(storageError.errorDescription). \(storageError.recoverySuggestion)")
+            }
+            }
+            receiveValue: { listResult in
+                listResult.items.forEach { item in
+                    if item.key.hasSuffix(".jpg") || item.key.hasSuffix(".png") {
+                        self.imagesInS3Bucket.append(item.key)
+                    }
+                }
+            }
     }
     
     func takePhotoButton() {
@@ -132,8 +149,8 @@ struct CameraView: View {
                 print("Uploaded image!")
                 imageCounter += 1
                 
-                let post = Post(imageKey: key)
-                save(post)
+//                let post = Post(imageKey: key)
+//                save(post)
             
             case .failure(let error):
                 print("Failed to upload - \(error)")
@@ -157,53 +174,22 @@ struct CameraView: View {
         }
     }
     
-    @State var cancellableObserve: AnyCancellable?
-    func observePosts() {
-        cancellableObserve = Amplify.DataStore.publisher(for: Post.self).sink(
-            receiveCompletion: { print($0) },
-            receiveValue: { event in
-                do {
-                    let post = try event.decodeModel(as: Post.self)
-                    downloadImages(for: [post])
-                    
-                } catch {
+    @State var downloadToken: AnyCancellable?
+    func downloadImage(imageKey: String) {
+        downloadToken = Amplify.Storage.downloadData(key: imageKey).resultPublisher.sink(
+            receiveCompletion: {completion in
+                if case .failure(let error) = completion{
                     print(error)
                 }
-            }
-        )
-    }
-    
-    func downloadImages(for posts: [Post]) {
-        for post in posts {
-            
-            _ = Amplify.Storage.downloadData(key: post.imageKey) { result in
-                switch result {
-                case .success(let imageData):
-                    let image = UIImage(data: imageData)
-                    print("IMAGE KEY: \(post.imageKey)")
+            },
+            receiveValue: {data in
+                let image = UIImage(data: data)
+                print("IMAGE KEY: \(imageKey)")
                     
-                    DispatchQueue.main.async {
-                        self.image = image
-                        
-//                        if post.imageKey.starts(with: "brightfield") {
-//                            self.brightfieldImage = image
-//                        }
-//                        else if post.imageKey.starts(with: "dpc") {
-//                            self.differentialPhaseContrastImage = image
-//                        }
-//                        else if post.imageKey.starts(with: "processed/threshholding") {
-//                            self.threshholdingImage = image
-//                            self.imageSaver.writeToPhotoAlbum(image: image!)
-//                        }
-                        self.imageSaver.writeToPhotoAlbum(image: image!)
-                    }
-                    
-                case .failure(let error):
-                    print("Failed to download image data - \(error)")
+                DispatchQueue.main.async {
+                    self.imageSaver.writeToPhotoAlbum(image: image!)
                 }
-            }
-            
-        }
+            })
     }
     
     @State var imageData1 = Data()
@@ -212,10 +198,10 @@ struct CameraView: View {
     @State var cancellableBF2: AnyCancellable?
     
     func brightfieldButton() {
-//        brightfieldDownload()
-//        shouldShowBrightfieldImage.toggle()
         if let image = self.brightfieldImage {
-            upload(image: image, subfolder: "brightfield")
+            upload(image: image, subfolder: "unprocessed/brightfield")
+            sleep(10)
+            brightfieldDownload()
         }
         else {
             shouldShowBrightfieldImage.toggle()
@@ -304,7 +290,9 @@ struct CameraView: View {
 //        differentialPhaseContrastDownload()
 //        shouldShowDifferentialPhaseContrastImage.toggle()
         if let image = self.differentialPhaseContrastImage {
-            upload(image: image, subfolder: "dpc")
+            upload(image: image, subfolder: "unprocessed/dpc")
+            sleep(10)
+            differentialPhaseContrastDownload()
         }
         else {
             shouldShowDifferentialPhaseContrastImage.toggle()
@@ -383,16 +371,27 @@ struct CameraView: View {
 
     func threshholdingButton() {
         if let image = self.threshholdingImage {
+//            let currentSize = self.imagesInS3Bucket.count
             upload(image: image, subfolder: "unprocessed/threshholding")
+//            repeat {
+                sleep(5)
+                listen()
+//            }
+//            while self.imagesInS3Bucket.count < currentSize+2
+            for e in imagesInS3Bucket {
+                print(e)
+            }
+            downloadImage(imageKey: self.imagesInS3Bucket.last!)
         }
         else {
             shouldShowThreshholdingImage.toggle()
         }
     }
 
-    func threshholdingDownload() {
+    func threshholdingDownload() -> Bool {
 //        imageCounter -= 1
-        let storageOperation2 = Amplify.Storage.downloadData(key: "threshholding/sample\(imageCounter).jpg")
+        var completed = false
+        let storageOperation2 = Amplify.Storage.downloadData(key: "processed/threshholding/thresholdauto.jpg")
         cancellableTH = storageOperation2.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
@@ -400,14 +399,18 @@ struct CameraView: View {
                 }
             },
             receiveValue: {data in
-                self.threshholdingImage = SwiftImage.Image<RGBA<UInt8>>(data: data)?.uiImage
-//                DispatchQueue.main.async {
+                guard let image = SwiftImage.Image<RGBA<UInt8>>(data: data)?.uiImage else {return}
+                self.threshholdingImage = image
+                DispatchQueue.main.async {
 //                    threshholdingProcessing(data: self.imageData1)
-//                }
+                    imageSaver.writeToPhotoAlbum(image: image)
+                    completed = true
+                }
                 print("Image data 2 - \(data)")
             })
 
 //        shouldShowThreshholdingImage.toggle()
+        return completed
     }
 
 //    func threshholdingProcessing() {
