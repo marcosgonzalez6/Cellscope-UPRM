@@ -25,7 +25,9 @@ class ImageSaver: NSObject {
 
 struct CameraView: View {
     
-    @State var imageCounter = 1
+    var group = DispatchGroup()
+    
+    @State var imageCounter = 7
     private let imageSaver = ImageSaver()
     @State var imagesInS3Bucket = [String]()  // list of image keys in S3 bucket
     
@@ -108,9 +110,9 @@ struct CameraView: View {
         .sheet(isPresented: $shouldShowThreshholdingImage, content: {
             ImagePicker(image: $threshholdingImage)
         })
-        .onAppear {
-            listen()
-        }
+//        .onAppear {
+//            listen()
+//        }
     }
     
     @State var listenToken: AnyCancellable?
@@ -123,7 +125,9 @@ struct CameraView: View {
             receiveValue: { listResult in
                 listResult.items.forEach { item in
                     if item.key.hasSuffix(".jpg") || item.key.hasSuffix(".png") {
-                        self.imagesInS3Bucket.append(item.key)
+                        DispatchQueue.main.async {
+                            self.imagesInS3Bucket.append(item.key)
+                        }
                     }
                 }
             }
@@ -374,24 +378,30 @@ struct CameraView: View {
 //            let currentSize = self.imagesInS3Bucket.count
             upload(image: image, subfolder: "unprocessed/threshholding")
 //            repeat {
-                sleep(5)
-                listen()
+            sleep(10)
+//            DispatchQueue.main.async {
+//                threshholdingDownload()
+//            }
+            group.enter()
+            threshholdingDownload()
+            group.leave()
 //            }
 //            while self.imagesInS3Bucket.count < currentSize+2
-            for e in imagesInS3Bucket {
-                print(e)
-            }
-            downloadImage(imageKey: self.imagesInS3Bucket.last!)
+//            for e in imagesInS3Bucket {
+//                print(e)
+//            }
+//            downloadImage(imageKey: self.imagesInS3Bucket.last!)
+            
         }
         else {
             shouldShowThreshholdingImage.toggle()
         }
     }
 
-    func threshholdingDownload() -> Bool {
+    func threshholdingDownload() {
 //        imageCounter -= 1
         var completed = false
-        let storageOperation2 = Amplify.Storage.downloadData(key: "processed/threshholding/thresholdauto.jpg")
+        let storageOperation2 = Amplify.Storage.downloadData(key: "processed/threshholding/threshholdresult\(imageCounter-1).jpg")
         cancellableTH = storageOperation2.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
@@ -406,11 +416,11 @@ struct CameraView: View {
                     imageSaver.writeToPhotoAlbum(image: image)
                     completed = true
                 }
-                print("Image data 2 - \(data)")
+                print("Image data - \(data)")
             })
 
 //        shouldShowThreshholdingImage.toggle()
-        return completed
+//        return completed
     }
 
 //    func threshholdingProcessing() {
