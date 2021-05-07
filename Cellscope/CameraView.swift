@@ -12,6 +12,9 @@ import Amplify
 import Combine
 import SwiftImage
 
+
+// Object to save an image to iPhone's photo library
+// From https://www.hackingwithswift.com/books/ios-swiftui/how-to-save-images-to-the-users-photo-library
 class ImageSaver: NSObject {
     func writeToPhotoAlbum(image: UIImage) {
         UIImageWriteToSavedPhotosAlbum(image, self, #selector(saveError), nil)
@@ -23,13 +26,16 @@ class ImageSaver: NSObject {
         }
 }
 
+// This is the main view of the application
+// Contains the logic for uploading/downloading to/from S3 and
+// running image processing algorithms locally on the iPhone
 struct CameraView: View {
     
-    var group = DispatchGroup()
+    var group = DispatchGroup()     // for asynchronous invocation of certain functions
     
-    @State var imageCounter = 7
-    private let imageSaver = ImageSaver()
-    @State var imagesInS3Bucket = [String]()  // list of image keys in S3 bucket
+    @State var imageCounter = 2         // keep track of number for image key, initially updated to bucket size+1
+    private let imageSaver = ImageSaver()       // to save image to photo library
+    @State var imagesInS3Bucket = [String]()    // list of image keys in S3 bucket
     
     @State var shouldShowImagePicker = false
     @State var image: UIImage?
@@ -40,8 +46,8 @@ struct CameraView: View {
     @State var shouldShowDifferentialPhaseContrastImage = false
     @State var differentialPhaseContrastImage: UIImage?
     
-    @State var shouldShowThreshholdingImage = false
-    @State var threshholdingImage: UIImage?
+    @State var shouldShowThresholdingImage = false
+    @State var thresholdingImage: UIImage?
     
     var body: some View {
         VStack {
@@ -81,7 +87,7 @@ struct CameraView: View {
                 .frame(minWidth: 10.0)
             }
             HStack {
-                Button(action: threshholdingButton, label: {
+                Button(action: thresholdingButton, label: {
                     Text("Threshholding")
                 })
                 .padding()
@@ -107,16 +113,17 @@ struct CameraView: View {
         .sheet(isPresented: $shouldShowDifferentialPhaseContrastImage, content: {
             ImagePicker(image: $differentialPhaseContrastImage)
         })
-        .sheet(isPresented: $shouldShowThreshholdingImage, content: {
-            ImagePicker(image: $threshholdingImage)
+        .sheet(isPresented: $shouldShowThresholdingImage, content: {
+            ImagePicker(image: $thresholdingImage)
         })
 //        .onAppear {
-//            listen()
+//            listItemsInBucketFolder()
 //        }
     }
     
     @State var listenToken: AnyCancellable?
-    func listen() {
+    func listItemsInBucketFolder(folder: String) -> [String]{
+        var items = [String]()
         listenToken = Amplify.Storage.list().resultPublisher.sink {
             if case let .failure(storageError) = $0 {
                 print("Failed: \(storageError.errorDescription). \(storageError.recoverySuggestion)")
@@ -124,18 +131,21 @@ struct CameraView: View {
             }
             receiveValue: { listResult in
                 listResult.items.forEach { item in
-                    if item.key.hasSuffix(".jpg") || item.key.hasSuffix(".png") {
-                        DispatchQueue.main.async {
-                            self.imagesInS3Bucket.append(item.key)
-                        }
+                    if item.key.hasPrefix(folder) &&
+                        (item.key.hasSuffix(".jpg") || item.key.hasSuffix(".png")) {
+//                        DispatchQueue.main.async {
+//                            self.imagesInS3Bucket.append(item.key)
+//                        }
+                        items.append(item.key)
                     }
                 }
             }
+        return items
     }
     
     func takePhotoButton() {
         if let image = self.image {
-            upload(image: image, subfolder: "unprocessed")
+//            upload(image: image, subfolder: "unprocessed")
         }
         else {
             shouldShowImagePicker.toggle()
@@ -143,16 +153,17 @@ struct CameraView: View {
     }
     
     // upload an image to AWS S3 bucket
-    func upload(image: UIImage, subfolder: String){
+    func upload(image: UIImage, path: String){
+        var done = false
         guard let imageData = image.jpegData(compressionQuality: 0.5) else {return}
-        let key = subfolder + "/sample" + String(imageCounter) + ".jpg"
+//        let key = subfolder + "/sample" + String(imageCounter) + ".jpg"
         
-        _ = Amplify.Storage.uploadData(key: key, data: imageData) { result in
+        _ = Amplify.Storage.uploadData(key: path, data: imageData) { result in
             switch result {
             case .success:
                 print("Uploaded image!")
                 imageCounter += 1
-                
+                done = true
 //                let post = Post(imageKey: key)
 //                save(post)
             
@@ -196,73 +207,95 @@ struct CameraView: View {
             })
     }
     
-    @State var imageData1 = Data()
-    @State var imageData2 = Data()
+    @State var brightfieldSize = 0
+    @State var image1: UIImage?
+    @State var image2: UIImage?
     @State var cancellableBF1: AnyCancellable?
     @State var cancellableBF2: AnyCancellable?
     
     func brightfieldButton() {
         if let image = self.brightfieldImage {
-            upload(image: image, subfolder: "unprocessed/brightfield")
-            sleep(10)
-            brightfieldDownload()
+            if image1 == nil {
+                image1 = image
+            }
+            else if image1 != nil && image2 == nil {
+                image2 = image
+            }
+            else if image1 != nil && image2 != nil {
+                brightfieldProcessing(image1: self.image1!, image2: self.image2!)
+            }
+            upload(image: image, path: "unprocessed/brightfield/sample\(brightfieldSize+1).jpg")
+            self.brightfieldSize += 1
+            if brightfieldSize > 1 {
+                
+                sleep(10)
+                group.enter()
+                brightfieldS3Download(path: "processed/brightfield/bfresult+1.jpg")
+                group.leave()
+            }
         }
         else {
             shouldShowBrightfieldImage.toggle()
         }
     }
     
-    // download two images from unprocessed/samples/ and run bf processing algorithm
-    func brightfieldDownload() {
-        imageCounter -= 1
-        let storageOperation1 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
-        cancellableBF1 = storageOperation1.resultPublisher.sink (
+    func brightfieldS3Download(path: String) {
+        let storageOperation = Amplify.Storage.downloadData(key: path)
+        cancellableBF1 = storageOperation.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
                     print(error)
                 }
             },
             receiveValue: {data in
-                self.imageData1 = data
-                print("Image data 1 - \(data)")
-            })
-        
-        imageCounter -= 1
-        let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
-        cancellableBF2 = storageOperation2.resultPublisher.sink (
-            receiveCompletion: {completion in
-                if case .failure(let error) = completion{
-                    print(error)
-                }
-            },
-            receiveValue: {data in
-                self.imageData2 = data
+                guard let image = SwiftImage.Image<RGBA<UInt8>>(data: data)?.uiImage else {return}
+                self.brightfieldImage = image
                 DispatchQueue.main.async {
-                    brightfieldProcessing(leftData: self.imageData1, rightData: self.imageData2)
+                    imageSaver.writeToPhotoAlbum(image: image)
                 }
-                print("Image data 2 - \(data)")
+                print("Image data - \(data)")
             })
-        
-        shouldShowBrightfieldImage.toggle()
     }
     
-    func brightfieldProcessing(leftData: Data, rightData: Data) {
-        guard let leftImage = SwiftImage.Image<RGBA<UInt8>>(data: leftData)?.resizedTo(width: 20, height: 20)
-            else {return}
-        guard let rightImage = SwiftImage.Image<RGBA<UInt8>>(data: rightData)?.resizedTo(width: 20, height: 20)
-            else {return}
+    
+    // download two images from unprocessed/samples/ and run bf processing algorithm
+//    func brightfieldDownload() {
+//        imageCounter -= 1
+//        let storageOperation1 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
+//        cancellableBF1 = storageOperation1.resultPublisher.sink (
+//            receiveCompletion: {completion in
+//                if case .failure(let error) = completion{
+//                    print(error)
+//                }
+//            },
+//            receiveValue: {data in
+//                self.imageData1 = data
+//                print("Image data 1 - \(data)")
+//            })
+//
+//        imageCounter -= 1
+//        let storageOperation2 = Amplify.Storage.downloadData(key: "unprocessed/sample\(imageCounter).jpg")
+//        cancellableBF2 = storageOperation2.resultPublisher.sink (
+//            receiveCompletion: {completion in
+//                if case .failure(let error) = completion{
+//                    print(error)
+//                }
+//            },
+//            receiveValue: {data in
+//                self.imageData2 = data
+//                DispatchQueue.main.async {
+//                    brightfieldProcessing(leftData: self.imageData1, rightData: self.imageData2)
+//                }
+//                print("Image data 2 - \(data)")
+//            })
+//
+//        shouldShowBrightfieldImage.toggle()
+//    }
+    
+    func brightfieldProcessing(image1: UIImage, image2: UIImage) {
+        let leftImage = SwiftImage.Image<RGBA<UInt8>>(uiImage: image1).resizedTo(width: 100, height: 100)
+        let rightImage = SwiftImage.Image<RGBA<UInt8>>(uiImage: image2).resizedTo(width: 100, height: 100)
         
-//        var pixels: [RGBA<UInt8>] = []
-//        for x in 0...leftImage.height-1 {
-//            for y in 0...leftImage.width-1 {
-//                if y < leftImage.width/2 {
-//                    pixels.append(leftImage[x,y])
-//                }
-//                else {
-//                    pixels.append(rightImage[x,y])
-//                }
-//            }
-//        }
         var pixels: [RGBA<UInt8>] = []
         for x in 0...leftImage.height-1 {
             for y in 0...rightImage.width-1 {
@@ -278,11 +311,11 @@ struct CameraView: View {
             }
         }
         
-        self.brightfieldImage = SwiftImage.Image<RGBA<UInt8>>(width: 20, height: 20, pixels: pixels).uiImage
+        self.brightfieldImage = SwiftImage.Image<RGBA<UInt8>>(width: 100, height: 100, pixels: pixels).uiImage
         self.imageSaver.writeToPhotoAlbum(image: self.brightfieldImage!)
-        DispatchQueue.main.async {
-            upload(image: self.brightfieldImage!, subfolder: "brightfield")
-        }
+//        DispatchQueue.main.async {
+//            upload(image: self.brightfieldImage!, subfolder: "brightfield")
+//        }
         
         print("-----Brightfield processing DONE-----")
     }
@@ -294,7 +327,7 @@ struct CameraView: View {
 //        differentialPhaseContrastDownload()
 //        shouldShowDifferentialPhaseContrastImage.toggle()
         if let image = self.differentialPhaseContrastImage {
-            upload(image: image, subfolder: "unprocessed/dpc")
+//            upload(image: image, subfolder: "unprocessed/dpc")
             sleep(10)
             differentialPhaseContrastDownload()
         }
@@ -365,7 +398,7 @@ struct CameraView: View {
         
         // upload image to S3 bucket in folder "dpc"
         DispatchQueue.main.async {
-            upload(image: self.image!, subfolder: "dpc")
+//            upload(image: self.image!, subfolder: "dpc")
         }
         
         print("-----Differential Phase Contrast processing DONE-----")
@@ -373,35 +406,32 @@ struct CameraView: View {
     
     @State var cancellableTH: AnyCancellable?
 
-    func threshholdingButton() {
-        if let image = self.threshholdingImage {
-//            let currentSize = self.imagesInS3Bucket.count
-            upload(image: image, subfolder: "unprocessed/threshholding")
-//            repeat {
-            sleep(10)
-//            DispatchQueue.main.async {
-//                threshholdingDownload()
+    func thresholdingButton() {
+        if let image = self.thresholdingImage {
+//            let currentSize = listItemsInBucketFolder(folder: "unprocessed/thresholding").count
+            var currentSize = 0
+//            DispatchQueue.global().sync {
+//                upload(image: image, path: "unprocessed/thresholding/sample\(currentSize+1).jpg")
 //            }
+//
+//            DispatchQueue.global().asyncAfter(deadline: .now()+10) {
+//                thresholdingDownload(path: "processed/thresholding/threshholdresult\(currentSize+1).jpg")
+//            }
+            upload(image: image, path: "unprocessed/threshholding/sample\(currentSize+1).jpg")
+            sleep(20)
             group.enter()
-            threshholdingDownload()
+            thresholdingDownload(path: "processed/threshholding/threshholdresult\(currentSize+1).jpg")
             group.leave()
-//            }
-//            while self.imagesInS3Bucket.count < currentSize+2
-//            for e in imagesInS3Bucket {
-//                print(e)
-//            }
-//            downloadImage(imageKey: self.imagesInS3Bucket.last!)
-            
+            currentSize += 1
         }
         else {
-            shouldShowThreshholdingImage.toggle()
+            shouldShowThresholdingImage.toggle()
         }
     }
 
-    func threshholdingDownload() {
+    func thresholdingDownload(path: String) {
 //        imageCounter -= 1
-        var completed = false
-        let storageOperation2 = Amplify.Storage.downloadData(key: "processed/threshholding/threshholdresult\(imageCounter-1).jpg")
+        let storageOperation2 = Amplify.Storage.downloadData(key: path)
         cancellableTH = storageOperation2.resultPublisher.sink (
             receiveCompletion: {completion in
                 if case .failure(let error) = completion{
@@ -410,17 +440,14 @@ struct CameraView: View {
             },
             receiveValue: {data in
                 guard let image = SwiftImage.Image<RGBA<UInt8>>(data: data)?.uiImage else {return}
-                self.threshholdingImage = image
+                self.thresholdingImage = image
                 DispatchQueue.main.async {
-//                    threshholdingProcessing(data: self.imageData1)
                     imageSaver.writeToPhotoAlbum(image: image)
-                    completed = true
                 }
                 print("Image data - \(data)")
             })
 
-//        shouldShowThreshholdingImage.toggle()
-//        return completed
+//        shouldShowThresholdingImage.toggle()
     }
 
 //    func threshholdingProcessing() {
